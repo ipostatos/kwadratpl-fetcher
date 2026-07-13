@@ -1,0 +1,21 @@
+# GitHub отключает scheduled-workflows после 60 дней без активности в репо.
+# Раз в месяц делаем пустой коммит, чтобы крон fetch-listings жил вечно.
+name: keepalive
+on:
+  schedule:
+    - cron: "17 3 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          git config user.name "keepalive-bot"
+          git config user.email "actions@github.com"
+          git commit --allow-empty -m "keepalive: prevent scheduled workflow expiry"
+          git push

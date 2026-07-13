@@ -1,0 +1,31 @@
+name: fetch-listings
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: fetch-listings
+  cancel-in-progress: false
+
+jobs:
+  fetch-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch listings from OLX
+        env:
+          OLX_PAUSE: "0.3"
+        run: python3 fetch_olx.py /tmp/listings.json
+
+      - name: Push to backend
+        run: |
+          code=$(curl -s -o /tmp/ingest.json -w "%{http_code}" \
+            -X POST "https://kwadratpl-46-224-220-94.sslip.io/api/listings" \
+            -H "Content-Type: application/json" \
+            -H "X-Ingest-Token: ${{ secrets.INGEST_TOKEN }}" \
+            --data-binary @/tmp/listings.json)
+          cat /tmp/ingest.json; echo
+          test "$code" = "200"
