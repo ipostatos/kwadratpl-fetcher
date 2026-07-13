@@ -244,31 +244,117 @@ def fetch_otodom(city_slug, rent_type):
     return items.get("items") or []
 
 
-# ── дедупликация OLX ↔ Otodom: одна квартира на двух площадках ──────────────
+# ── Morizon: парсинг ld+json Product.offers страницы выдачи ─────────────────
+# Вторая экосистема польского рынка (группа Ringier), преимущественно
+# агентские объявления. Города — те же слаги, что у нас.
+MORIZON = "https://www.morizon.pl/do-wynajecia/%s/%s/"
+MORIZON_CAT = {"long": "mieszkania", "room": "pokoje"}   # посуточного нет
+MZN_ID_RE = re.compile(r"mzn(\d+)")
+MZN_AREA_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*m²")
+
+
+def normalize_morizon(offer, city_slug, rent_type):
+    url = offer.get("url") or ""
+    mid = MZN_ID_RE.search(url)
+    price = to_int(offer.get("price"))
+    if not mid or not price or price <= 0:
+        return None
+    name = WS_RE.sub(" ", offer.get("name") or "").strip()
+    am = MZN_AREA_RE.search(name)
+    area = to_int(am.group(1).replace(",", ".")) if am else None
+    # район: текст после "m²", первый фрагмент до запятой
+    district = None
+    if am:
+        tail = name[am.end():].strip(" ,")
+        if tail:
+            district = tail.split(",")[0].strip() or None
+    rooms = 1 if name.lower().startswith("kawalerka") else None
+    photo = offer.get("image") if str(offer.get("image", "")).startswith("https") else None
+    return {
+        "id": "morizon-%s" % mid.group(1),
+        "url": url,
+        "title": name,
+        "descr": "",
+        "city": city_slug,
+        "district": district,
+        "type": rent_type,
+        "rooms": rooms,
+        "area": area,
+        "price": price,
+        "oldPrice": None,
+        "floor": None,
+        "pets": None,
+        "parking": None,
+        "balcony": parse_balcony(name),
+        "photo": photo,
+        "source": "Morizon",
+        "agency": None,            # на выдаче Morizon тип продавца не размечен
+        "ts": int(time.time() * 1000),
+    }
+
+
+def fetch_morizon(city_slug, rent_type):
+    url = MORIZON % (MORIZON_CAT[rent_type], city_slug)
+    html = fetch_html(url)
+    offers = []
+    for m in re.finditer(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', html, re.S):
+        try:
+            b = json.loads(m.group(1))
+        except Exception:
+            continue
+        if isinstance(b, dict) and b.get("@type") == "Product":
+            o = b.get("offers") or {}
+            offers = o.get("offers") if isinstance(o, dict) else []
+            break
+    return offers or []
+
+
+# ── дедупликация между площадками: одна квартира на нескольких порталах ─────
+# Приоритет представителя: источник (OLX/Otodom богаче полями), затем фото,
+# затем свежесть. Так кросс-портальный дубль схлопывается в лучшую карточку.
+SOURCE_RANK = {"OLX": 3, "Otodom": 2, "Morizon": 1}
+
+
 def dedup_key(l):
-    # эвристика: город+тип+цена+площадь+комнаты. Совпало на обеих площадках —
-    # почти наверняка тот же объект; оставляем один (приоритет — с фото и раньше)
-    return (l.get("city"), l.get("type"), l.get("price"),
-            l.get("area"), l.get("rooms"))
+    # (город, тип, цена, площадь) — устойчиво к отсутствию комнат/района
+    # (Morizon не всегда даёт комнаты). Точное совпадение цены И площади в
+    # одном городе почти наверняка = тот же объект; ложные слияния редки.
+    return (l.get("city"), l.get("type"), l.get("price"), l.get("area"))
+
+
+def _rep_score(l):
+    return (SOURCE_RANK.get(l.get("source"), 0), bool(l.get("photo")), l.get("ts", 0))
 
 
 def dedup(listings):
-    best = {}
+    # группируем по (город,тип,цена,площадь)
+    groups, singles = {}, []
     for l in listings:
         k = dedup_key(l)
-        if None in (k[2], k[3]):        # без цены/площади не дедупим (риск ложных слияний)
-            best[id(l)] = l
-            continue
-        cur = best.get(k)
-        if cur is None:
-            best[k] = l
+        if k[2] is None or k[3] is None:      # без цены/площади не дедупим
+            singles.append(l)
         else:
-            # предпочитаем объявление с фото, при равенстве — более свежее
-            better = (bool(l.get("photo")), l.get("ts", 0)) > \
-                     (bool(cur.get("photo")), cur.get("ts", 0))
-            if better:
-                best[k] = l
-    return list(best.values())
+            groups.setdefault(k, []).append(l)
+
+    out = list(singles)
+    for grp in groups.values():
+        if len(grp) == 1:
+            out.append(grp[0])
+            continue
+        by_src = {}
+        for l in grp:
+            by_src.setdefault(l.get("source"), []).append(l)
+        if len(by_src) == 1:
+            # все из одного источника — id разные => это РАЗНЫЕ квартиры,
+            # случайно совпавшие ценой+площадью; оставляем все
+            out.extend(grp)
+        else:
+            # кросс-портальный дубль. Число реальных квартир ≈ макс. записей
+            # от одного источника; оставляем столько лучших представителей
+            n = max(len(v) for v in by_src.values())
+            grp.sort(key=_rep_score, reverse=True)
+            out.extend(grp[:n])
+    return out
 
 
 def main():
@@ -318,19 +404,47 @@ def main():
             print("otodom %s %s: %d" % (city_slug, rent_type, got))
             time.sleep(float(os.environ.get("OTODOM_PAUSE", "0.5")))
 
+    # ── Morizon (квартиры и комнаты) ──
+    for city_slug in CITIES:
+        for rent_type in MORIZON_CAT:
+            try:
+                offers = fetch_morizon(city_slug, rent_type)
+            except Exception as e:
+                print("WARN morizon %s/%s: %s" % (city_slug, rent_type, e))
+                errors += 1
+                continue
+            got = 0
+            for offer in offers:
+                row = normalize_morizon(offer, city_slug, rent_type)
+                if row and row["id"] not in seen:
+                    seen.add(row["id"])
+                    listings.append(row)
+                    got += 1
+            print("morizon %s %s: %d" % (city_slug, rent_type, got))
+            time.sleep(float(os.environ.get("MORIZON_PAUSE", "0.5")))
+
     if not listings:
         print("FATAL: 0 listings, keeping previous file")
         sys.exit(1)
 
+    # вклад источников ДО дедупа
+    def by_src(rows):
+        d = {}
+        for l in rows:
+            d[l.get("source")] = d.get(l.get("source"), 0) + 1
+        return d
     before = len(listings)
+    raw = by_src(listings)
     listings = dedup(listings)
-    print("dedup: %d -> %d (removed %d cross-portal duplicates)" % (
+    kept = by_src(listings)
+    print("dedup: %d -> %d (-%d cross-portal duplicates)" % (
         before, len(listings), before - len(listings)))
+    print("  by source raw:", raw, "| kept:", kept)
 
     listings.sort(key=lambda l: l["ts"], reverse=True)
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "source": "OLX + Otodom",
+        "source": "OLX + Otodom + Morizon",
         "count": len(listings),
         "listings": listings,
     }
@@ -339,9 +453,10 @@ def main():
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, separators=(",", ":"))
     os.replace(tmp, out_path)  # атомарно: Caddy не отдаст недописанный файл
-    n_ot = sum(1 for l in listings if l.get("source") == "Otodom")
-    print("OK: %d listings (%d OLX + %d Otodom) -> %s" % (
-        len(listings), len(listings) - n_ot, n_ot, out_path))
+    src = {}
+    for l in listings:
+        src[l.get("source")] = src.get(l.get("source"), 0) + 1
+    print("OK: %d listings %s -> %s" % (len(listings), src, out_path))
 
 
 if __name__ == "__main__":
