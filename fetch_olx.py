@@ -34,6 +34,7 @@ CITIES = {
     "poznan": 13983,
     "lodz": 10609,
     "zakopane": 59535,
+    "bialystok": 1079,
 }
 # категория OLX → тип аренды в приложении
 # 15 mieszkania/wynajem, 1816 noclegi, 11 stancje i pokoje
@@ -167,6 +168,7 @@ OTODOM_CITY = {
     "poznan": "wielkopolskie/poznan/poznan/poznan",
     "lodz": "lodzkie/lodz/lodz/lodz",
     "zakopane": "malopolskie/tatrzanski/zakopane/zakopane",
+    "bialystok": "podlaskie/bialystok/bialystok/bialystok",
 }
 OTODOM_CAT = {"long": "mieszkanie", "room": "pokoj"}   # посуточного у Otodom нет
 OTODOM_ROOMS = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 4,
