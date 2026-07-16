@@ -12,6 +12,8 @@
 #   rooms|null, area|null, price, oldPrice|null, floor|null, pets|null,
 #   parking|null, balcony|null, photo|null, url, title, descr,
 #   source "OLX"|"Otodom", agency (true=агентство), ts (epoch ms)
+#   ownerId|ownerName|ownerSince — только OLX (landlord trust pack, см. app.js
+#   landlordBadge); Otodom/Morizon на выдаче поиска личность продавца не отдают
 # ===========================================================================
 import json
 import os
@@ -113,6 +115,24 @@ def clean_text(html_text, limit=240):
     return s[:limit].rsplit(" ", 1)[0] + "…" if len(s) > limit else s
 
 
+def parse_owner(offer):
+    # OLX отдаёт реальную личность продавца прямо в выдаче поиска (в отличие
+    # от Otodom/Morizon, где на странице выдачи такого нет) — используем для
+    # landlord trust pack: повторные объявления того же ownerId + возраст
+    # аккаунта (ownerSince) как мягкий сигнал доверия.
+    user = offer.get("user") or {}
+    oid = user.get("id")
+    name = WS_RE.sub(" ", str(user.get("name") or "")).strip()[:60] or None
+    since = None
+    created = user.get("created")
+    if created:
+        try:
+            since = datetime.fromisoformat(created).year
+        except (TypeError, ValueError):
+            since = None
+    return (oid, name, since)
+
+
 def normalize(offer, city_slug, rent_type):
     price_v = param(offer, "price") or {}
     price = to_int(price_v.get("value"))
@@ -134,6 +154,7 @@ def normalize(offer, city_slug, rent_type):
     title = WS_RE.sub(" ", TAG_RE.sub(" ", offer.get("title") or "")).strip()
     descr = clean_text(offer.get("description"))
     district = (offer.get("location") or {}).get("district") or {}
+    owner_id, owner_name, owner_since = parse_owner(offer)
     return {
         "id": "olx-%s" % offer["id"],
         "url": offer.get("url"),
@@ -153,6 +174,9 @@ def normalize(offer, city_slug, rent_type):
         "photo": photo,
         "source": "OLX",
         "agency": bool(offer.get("business")),
+        "ownerId": owner_id,
+        "ownerName": owner_name,
+        "ownerSince": owner_since,
         "ts": ts,
     }
 
