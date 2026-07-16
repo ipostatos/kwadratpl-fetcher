@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 import urllib.request
 from datetime import datetime, timezone
 
@@ -343,45 +344,97 @@ def fetch_morizon(city_slug, rent_type):
 SOURCE_RANK = {"OLX": 3, "Otodom": 2, "Morizon": 1}
 
 
-def dedup_key(l):
-    # (город, тип, цена, площадь) — устойчиво к отсутствию комнат/района
-    # (Morizon не всегда даёт комнаты). Точное совпадение цены И площади в
-    # одном городе почти наверняка = тот же объект; ложные слияния редки.
-    return (l.get("city"), l.get("type"), l.get("price"), l.get("area"))
+AREA_TOL = 2.0   # м²: 47.5 на Otodom и 48 на OLX — почти наверняка та же квартира
 
 
 def _rep_score(l):
     return (SOURCE_RANK.get(l.get("source"), 0), bool(l.get("photo")), l.get("ts", 0))
 
 
+def _fold(s):
+    # ascii-фолд для сравнения названий: łódź -> lodz, śródmieście -> srodmiescie
+    s = str(s).strip().lower().replace("ł", "l")
+    return "".join(c for c in unicodedata.normalize("NFKD", s)
+                   if not unicodedata.combining(c))
+
+
+def _norm_district(d, city=None):
+    """Нормализованный район для сравнения; None = неизвестен.
+    Morizon иногда кладёт в район сам ГОРОД («Łódź») — это не информация."""
+    if not d:
+        return None
+    x = _fold(d)
+    if city and x == _fold(city):
+        return None
+    return x
+
+
+def _same_flat(a, b):
+    """Совместимы ли две записи (город/тип/цена уже совпали по корзине):
+    площадь в допуске, а вторичные сигналы — комнаты и район — не расходятся.
+    Неизвестное значение (None) не дисквалифицирует: Morizon не всегда даёт
+    комнаты, район у части объявлений пуст. Районы-префиксы («Piasta» и
+    «Piasta II» — разная детализация у порталов) считаем совместимыми.
+    При НЕточной площади (47.5 vs 48) совпадение цены может быть случайным —
+    сливаем только с подтверждающей уликой: те же комнаты или тот же район."""
+    diff = abs(a["area"] - b["area"])
+    if diff > AREA_TOL:
+        return False
+    ra, rb = a.get("rooms"), b.get("rooms")
+    if ra is not None and rb is not None and ra != rb:
+        return False
+    da = _norm_district(a.get("district"), a.get("city"))
+    db = _norm_district(b.get("district"), b.get("city"))
+    district_compat = bool(da and db and (da == db or da.startswith(db) or db.startswith(da)))
+    if da and db and not district_compat:
+        return False
+    if diff > 0.01:   # площадь не совпала точно — нужна улика
+        return (ra is not None and ra == rb) or district_compat
+    return True
+
+
 def dedup(listings):
-    # группируем по (город,тип,цена,площадь)
-    groups, singles = {}, []
+    # Корзина: (город, тип, цена) — точные (цена на порталах совпадает у того
+    # же лота). Внутри корзины кластеры по площади ±AREA_TOL, слияние
+    # отменяется, если расходятся комнаты или район (false merge дороже
+    # false split: пользователь «не видит всё»).
+    buckets, singles = {}, []
     for l in listings:
-        k = dedup_key(l)
-        if k[2] is None or k[3] is None:      # без цены/площади не дедупим
-            singles.append(l)
+        if l.get("price") is None or l.get("area") is None:
+            singles.append(l)               # без цены/площади не дедупим
         else:
-            groups.setdefault(k, []).append(l)
+            buckets.setdefault((l.get("city"), l.get("type"), l.get("price")), []).append(l)
 
     out = list(singles)
-    for grp in groups.values():
+    for grp in buckets.values():
         if len(grp) == 1:
             out.append(grp[0])
             continue
-        by_src = {}
-        for l in grp:
-            by_src.setdefault(l.get("source"), []).append(l)
-        if len(by_src) == 1:
-            # все из одного источника — id разные => это РАЗНЫЕ квартиры,
-            # случайно совпавшие ценой+площадью; оставляем все
-            out.extend(grp)
-        else:
-            # кросс-портальный дубль. Число реальных квартир ≈ макс. записей
-            # от одного источника; оставляем столько лучших представителей
-            n = max(len(v) for v in by_src.values())
-            grp.sort(key=_rep_score, reverse=True)
-            out.extend(grp[:n])
+        # кластеризация от якоря (первый по площади): кандидат сравнивается
+        # с ЯКОРЕМ кластера, не с последним членом — исключает транзитивную
+        # склейку цепочки 46→48→50
+        clusters = []
+        for l in sorted(grp, key=lambda x: x["area"]):
+            for c in clusters:
+                if _same_flat(c[0], l):
+                    c.append(l)
+                    break
+            else:
+                clusters.append([l])
+        for c in clusters:
+            by_src = {}
+            for l in c:
+                by_src.setdefault(l.get("source"), []).append(l)
+            if len(by_src) == 1:
+                # все из одного источника — id разные => это РАЗНЫЕ квартиры,
+                # случайно совпавшие ценой+площадью; оставляем все
+                out.extend(c)
+            else:
+                # кросс-портальный дубль. Число реальных квартир ≈ макс. записей
+                # от одного источника; оставляем столько лучших представителей
+                n = max(len(v) for v in by_src.values())
+                c.sort(key=_rep_score, reverse=True)
+                out.extend(c[:n])
     return out
 
 
