@@ -7,12 +7,12 @@
 # Только stdlib. Запускается в GitHub Actions (fetcher-репо), POST-ит на
 # бэкенд VPS. Локально: python3 tools/fetch-olx.py [/path.json]
 #
-# Схема элемента listings[] совпадает с ожиданиями webapp/app.js:
+# Схема элемента listings[] совпадает с ожиданиями webapp/js/core.js:
 #   id "<src>-<id>", city (слаг), district|null, type long|short|room,
 #   rooms|null, area|null, price, oldPrice|null, floor|null, pets|null,
 #   parking|null, balcony|null, photo|null, url, title, descr,
 #   source "OLX"|"Otodom", agency (true=агентство), ts (epoch ms)
-#   ownerId|ownerName|ownerSince — только OLX (landlord trust pack, см. app.js
+#   ownerId|ownerName|ownerSince — только OLX (landlord trust pack, см. webapp/js/price.js
 #   landlordBadge); Otodom/Morizon на выдаче поиска личность продавца не отдают
 # ===========================================================================
 import json
@@ -27,7 +27,7 @@ API = "https://www.olx.pl/api/v1/offers/"
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
-# city_id OLX → слаг города в приложении (webapp/app.js CITIES)
+# city_id OLX → слаг города в приложении (webapp/js/core.js CITIES)
 CITIES = {
     "warszawa": 17871,
     "krakow": 8959,
