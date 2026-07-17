@@ -369,14 +369,32 @@ def _norm_district(d, city=None):
     return x
 
 
+# Улица из заголовка — доп. улика для пограничных случаев, когда один портал
+# и тот же дом относит к разным районам (у OLX/Otodom/Morizon это расходится
+# на границах районов). "ul./al./pl. Name" — 1-3 слова с заглавной буквы;
+# заголовки на русском/украинском такого не дают (None), это ожидаемо.
+STREET_RE = re.compile(
+    r"\b(?:ul\.?|al\.?|pl\.?)\s+"
+    r"([A-ZŁŚŻŹĆŃÓĄĘ][\wąćęłńóśźż\-]*"
+    r"(?:\s+[A-ZŁŚŻŹĆŃÓĄĘ][\wąćęłńóśźż\-]*){0,2})"
+)
+
+
+def _extract_street(title):
+    m = STREET_RE.search(title or "")
+    return _fold(m.group(1)) if m else None
+
+
 def _same_flat(a, b):
     """Совместимы ли две записи (город/тип/цена уже совпали по корзине):
-    площадь в допуске, а вторичные сигналы — комнаты и район — не расходятся.
-    Неизвестное значение (None) не дисквалифицирует: Morizon не всегда даёт
-    комнаты, район у части объявлений пуст. Районы-префиксы («Piasta» и
-    «Piasta II» — разная детализация у порталов) считаем совместимыми.
-    При НЕточной площади (47.5 vs 48) совпадение цены может быть случайным —
-    сливаем только с подтверждающей уликой: те же комнаты или тот же район."""
+    площадь в допуске, а вторичные сигналы — комнаты, район, улица — не
+    расходятся. Неизвестное значение (None) не дисквалифицирует: Morizon не
+    всегда даёт комнаты, район у части объявлений пуст. Районы-префиксы
+    («Piasta» и «Piasta II» — разная детализация у порталов) считаем
+    совместимыми. Точное совпадение улицы из заголовка перекрывает несовпадение
+    района — на границе районов порталы называют его по-разному, а адрес
+    не врёт. При НЕточной площади (47.5 vs 48) совпадение цены может быть
+    случайным — сливаем только с подтверждающей уликой: комнаты, район, улица."""
     diff = abs(a["area"] - b["area"])
     if diff > AREA_TOL:
         return False
@@ -386,10 +404,12 @@ def _same_flat(a, b):
     da = _norm_district(a.get("district"), a.get("city"))
     db = _norm_district(b.get("district"), b.get("city"))
     district_compat = bool(da and db and (da == db or da.startswith(db) or db.startswith(da)))
-    if da and db and not district_compat:
+    sa, sb = _extract_street(a.get("title")), _extract_street(b.get("title"))
+    street_compat = bool(sa and sb and sa == sb)
+    if da and db and not district_compat and not street_compat:
         return False
     if diff > 0.01:   # площадь не совпала точно — нужна улика
-        return (ra is not None and ra == rb) or district_compat
+        return (ra is not None and ra == rb) or district_compat or street_compat
     return True
 
 
