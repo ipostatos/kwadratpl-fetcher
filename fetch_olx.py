@@ -156,8 +156,15 @@ def normalize(offer, city_slug, rent_type):
     descr = clean_text(offer.get("description"))
     district = (offer.get("location") or {}).get("district") or {}
     owner_id, owner_name, owner_since = parse_owner(offer)
+    # координаты из offer.map: OLX рандомизирует точку в радиусе для приватности
+    # (show_detailed=False) — честно помечаем "approx"; точную отдаёт как "point"
+    geo = offer.get("map") or {}
+    has_geo = isinstance(geo.get("lat"), (int, float)) and isinstance(geo.get("lon"), (int, float))
     return {
         "id": "olx-%s" % offer["id"],
+        "lat": round(geo["lat"], 5) if has_geo else None,
+        "lon": round(geo["lon"], 5) if has_geo else None,
+        "geoPrec": ("point" if geo.get("show_detailed") else "approx") if has_geo else None,
         "url": offer.get("url"),
         "title": title,
         "descr": descr,
@@ -238,8 +245,15 @@ def normalize_otodom(item, city_slug, rent_type):
     except (TypeError, ValueError):
         ts = int(time.time() * 1000)
     title = WS_RE.sub(" ", TAG_RE.sub(" ", item.get("title") or "")).strip()
+    # Otodom отдаёт улицу прямо в выдаче (location.address.street) — бэкенд
+    # геокодит её в координаты с точностью street/address (geo_enrich.py)
+    street = ((item.get("location") or {}).get("address") or {}).get("street") or {}
+    street_name = (street.get("name") or "").strip() or None
+    if street_name and (street.get("number") or "").strip():
+        street_name += " " + street["number"].strip()
     return {
         "id": "otodom-%s" % item["id"],
+        "street": street_name,
         "url": url,
         "title": title,
         "descr": WS_RE.sub(" ", TAG_RE.sub(" ", item.get("shortDescription") or "")).strip(),
